@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Chartwise Bot v9.8  Crypto-Only High-Probability SMC/ICT + EMA Signal Bot
+Chartwise Bot v10.1  Crypto-Only High-Probability SMC/ICT + EMA Signal Bot
 Pairs: BTC/USD, SOL/USD, XRP/USD only.
 v9.0 milestone upgrades:
   1. Multi-timeframe signal consensus (5m/15m/1H) with +2/+3 bonus scoring
@@ -237,6 +237,11 @@ ACCOUNT_SIZE: float = 10000.0
 SIGNALS_FILE  = Path(__file__).parent / "chartwise_signals.json"
 STATE_FILE    = Path(__file__).parent / "chartwise_state.json"
 LEARNING_FILE = Path(__file__).parent / "chartwise_learning.json"
+WEIGHTS_FILE  = Path(__file__).parent / "chartwise_weights.json"
+
+#  v10.0: Dynamic score multipliers (rebalanced from pattern_performance outcomes)
+SCORE_MULTIPLIERS: dict = {}
+RESOLVED_OUTCOMES_COUNT: int = 0
 
 #  In-memory notepad for !notes command (v8.4) 
 NOTES: list[str] = []
@@ -2494,35 +2499,7 @@ ALERTS_ENABLED: bool = True
 
 
 def is_news_dead_zone() -> bool:
-    """
-    Block scanning in high-volatility windows around major macro events.
-    Covers:
-      - 5 min around every UTC hour mark (CPI, FOMC, NFP all release on the hour)
-      - NY open: 13:2513:40 UTC (first 15 min of US equities session)
-      - London open: 07:5508:10 UTC
-      - US CPI typical release: 12:2512:35 UTC
-      - US NFP typical release (first Friday 12:2512:35 UTC  same window as CPI)
-      - FOMC statement: 18:5519:10 UTC on FOMC days (covered by hour-end window)
-      - Asian open: 23:5500:10 UTC (Sydney/Tokyo open)
-    """
-    now = datetime.now(timezone.utc)
-    minute = now.minute
-    hour = now.hour
-    # 5 min around every UTC hour mark
-    if minute <= 5 or minute >= 55:
-        return True
-    # NY open 13:2513:40 UTC
-    if hour == 13 and 25 <= minute <= 40:
-        return True
-    # London open 07:5508:10 UTC (split across hours  hour boundary handles 07:5508:00)
-    if hour == 8 and minute <= 10:
-        return True
-    # US CPI/PPI release window 12:2512:40 UTC (also covers pre-NFP caution)
-    if hour == 12 and 25 <= minute <= 40:
-        return True
-    # Asian open overlap 23:5000:10 UTC (already caught by hour boundary, but explicit for clarity)
-    if hour == 23 and minute >= 50:
-        return True
+    """Dead zone disabled — bot scans 24/7."""
     return False
 
 
@@ -2940,7 +2917,8 @@ def analyze(candles: list[dict], pair_label: str) -> dict | None:
 
     # Engulfing candle  strong reversal body at the swept zone (v8.1: +2 double-weight)
     if detect_engulfing(candles, direction):
-        score += 2  # double weight like SFP  strong reversal signal
+        _eng_pts = round(2 * SCORE_MULTIPLIERS.get("engulfing", 1.0))
+        score += _eng_pts
         eng_dir = "Bullish" if direction == "long" else "Bearish"
         reasons.append(f" {eng_dir} Engulfing candle  strong reversal signal")
 
@@ -2948,12 +2926,14 @@ def analyze(candles: list[dict], pair_label: str) -> dict | None:
     _tls = detect_three_line_strike(candles)
     if _tls is not None:
         if (direction == "long" and _tls == "bullish") or (direction == "short" and _tls == "bearish"):
-            score += 2
+            _tls_pts = round(2 * SCORE_MULTIPLIERS.get("three_line_strike", 1.0))
+            score += _tls_pts
             reasons.append(" Three-Line Strike  high-probability reversal pattern")
 
     # Pin bar  rejection wick at swept level (existing list-based version)
     if detect_pin_bar(candles, direction):
-        score += 1
+        _pb_pts = round(1 * SCORE_MULTIPLIERS.get("pin_bar", 1.0))
+        score += _pb_pts
         reasons.append(f"{'Hammer' if direction == 'long' else 'Shooting star'} pin bar at swept zone")
 
     # v8.3: Single-candle pin bar (66% wick threshold)
@@ -3906,7 +3886,7 @@ async def update_active_trades(channel: discord.TextChannel):  # noqa: C901
                             value=f"{price_fmt(pair_label, invalidation_level)} (SL  1%)",
                             inline=True
                         )
-                        inv_embed.set_footer(text="Chartwise v9.8  Cancel pending limit orders for this setup")
+                        inv_embed.set_footer(text="Chartwise v10.0  Cancel pending limit orders for this setup")
                         await channel.send(embed=inv_embed)
                     except Exception as e:
                         print(f"[WARN] Invalidation embed failed {pair_label}: {e}")
@@ -3936,7 +3916,7 @@ async def update_active_trades(channel: discord.TextChannel):  # noqa: C901
                             value=f"{price_fmt(pair_label, invalidation_level)} (SL + 1%)",
                             inline=True
                         )
-                        inv_embed.set_footer(text="Chartwise v9.8  Cancel pending limit orders for this setup")
+                        inv_embed.set_footer(text="Chartwise v10.0  Cancel pending limit orders for this setup")
                         await channel.send(embed=inv_embed)
                     except Exception as e:
                         print(f"[WARN] Invalidation embed failed {pair_label}: {e}")
@@ -3977,7 +3957,7 @@ async def update_active_trades(channel: discord.TextChannel):  # noqa: C901
                                 value="Price never pulled back to the limit entry zone. The signal's market context has decayed  do not force entry.",
                                 inline=False
                             )
-                            _exp_embed.set_footer(text=f"Chartwise v9.8  Expired after {_age_str}  signal confidence decayed")
+                            _exp_embed.set_footer(text=f"Chartwise v10.0  Expired after {_age_str}  signal confidence decayed")
                             await channel.send(embed=_exp_embed)
                         except Exception as _e:
                             print(f"[WARN] Signal expiry embed failed {pair_label}: {_e}")
@@ -4014,7 +3994,7 @@ async def update_active_trades(channel: discord.TextChannel):  # noqa: C901
                             nudge_embed.add_field(name="Current Price", value=price_fmt(pair_label, price), inline=True)
                             nudge_embed.add_field(name="T2 Target", value=price_fmt(pair_label, t2), inline=True)
                             nudge_embed.add_field(name="Time Running", value=dur_str, inline=True)
-                            nudge_embed.set_footer(text="Chartwise v9.8  Active management recommended  ride to T2 or secure gains")
+                            nudge_embed.set_footer(text="Chartwise v10.0  Active management recommended  ride to T2 or secure gains")
                             await channel.send(embed=nudge_embed)
                         except Exception as e:
                             print(f"[WARN] Management nudge failed {pair_label}: {e}")
@@ -4046,7 +4026,7 @@ async def update_active_trades(channel: discord.TextChannel):  # noqa: C901
                             trail_embed.add_field(name="Current Price", value=price_fmt(pair_label, price), inline=True)
                             trail_embed.add_field(name="Trailing SL", value=price_fmt(pair_label, trail_sl), inline=True)
                             trail_embed.add_field(name="T2 Target", value=price_fmt(pair_label, trade.get("t2", 0)), inline=True)
-                            trail_embed.set_footer(text="Chartwise v9.8  Ride to T2  SL trails 0.5 ATR below price")
+                            trail_embed.set_footer(text="Chartwise v10.0  Ride to T2  SL trails 0.5 ATR below price")
                             await channel.send(embed=trail_embed)
                         except Exception as e:
                             print(f"[WARN] Trail notification failed {pair_label}: {e}")
@@ -4071,7 +4051,7 @@ async def update_active_trades(channel: discord.TextChannel):  # noqa: C901
                             trail_embed.add_field(name="Current Price", value=price_fmt(pair_label, price), inline=True)
                             trail_embed.add_field(name="Trailing SL", value=price_fmt(pair_label, trail_sl), inline=True)
                             trail_embed.add_field(name="T2 Target", value=price_fmt(pair_label, trade.get("t2", 0)), inline=True)
-                            trail_embed.set_footer(text="Chartwise v9.8  Ride to T2  SL trails 0.5 ATR above price")
+                            trail_embed.set_footer(text="Chartwise v10.0  Ride to T2  SL trails 0.5 ATR above price")
                             await channel.send(embed=trail_embed)
                         except Exception as e:
                             print(f"[WARN] Trail notification failed {pair_label}: {e}")
@@ -4171,7 +4151,7 @@ async def update_active_trades(channel: discord.TextChannel):  # noqa: C901
                     inline=False
                 )
                 journal_embed.add_field(name=" Lesson", value=_tj_lesson, inline=False)
-                journal_embed.set_footer(text=f"Chartwise v9.8  Trade Journal  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+                journal_embed.set_footer(text=f"Chartwise v10.0  Trade Journal  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
                 await channel.send(embed=journal_embed)
             except Exception as _tj_err:
                 print(f"[WARN] Trade journal embed failed for {pair_label}: {_tj_err}")
@@ -4421,7 +4401,7 @@ def make_premium_embed(pair_label: str, signal: dict, htf_trend: str, counter_tr
         _vol_icon_e = "" if _vol_regime_val == "High" else ("" if _vol_regime_val == "Low" else "")
         embed.add_field(name=" Vol Regime", value=f"{_vol_icon_e} {_vol_regime_val}", inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     return embed
 
 
@@ -4500,7 +4480,7 @@ def make_standard_embed(pair_label: str, signal: dict, htf_trend: str, counter_t
         _vol_icon_s = "" if _vol_regime_std == "High" else ("" if _vol_regime_std == "Low" else "")
         embed.add_field(name=" Vol Regime", value=f"{_vol_icon_s} {_vol_regime_std}", inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     return embed
 
 
@@ -4569,7 +4549,7 @@ def make_exit_embed(pair_label: str, trade: dict, exit_type: str, exit_price: fl
         score = trade.get("score", "?")
         embed.add_field(name="Signal Score", value=str(score), inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     return embed
 
 
@@ -4654,13 +4634,13 @@ def make_postmortem_embed(pair_label: str, trade: dict, current_price: float) ->
         embed.add_field(name="Confluence That Was Present", value=confluence_text, inline=False)
 
     embed.add_field(name=" What to Learn", value="\n".join(learn_points), inline=False)
-    embed.set_footer(text=f"Chartwise v9.8  Logged for adaptive learning  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Logged for adaptive learning  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     return embed
 
 
 def make_status_embed() -> discord.Embed:
     """Build comprehensive bot health dashboard embed. (v9.4 enhanced)"""
-    embed = discord.Embed(title=" Chartwise v9.8  Bot Health Dashboard", color=0x7C4DFF)
+    embed = discord.Embed(title=" Chartwise v10.0  Bot Health Dashboard", color=0x7C4DFF)
 
     #  Row 1: Scan interval 
     if current_scan_interval == 60:
@@ -4796,7 +4776,7 @@ def make_status_embed() -> discord.Embed:
         if score_lines:
             embed.add_field(name=" Avg Signal Score", value="  ".join(score_lines), inline=False)
 
-    embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}  !help for all commands")
+    embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}  !help for all commands")
     return embed
 
 
@@ -5508,7 +5488,7 @@ async def scan_pair(pair: dict, channel: discord.TextChannel):
                     value="Reduce position size per trade by 3050% when correlated signals fire together.",
                     inline=False
                 )
-                _wave_embed.set_footer(text=f"Chartwise v9.8  Wave window: {int(WAVE_WINDOW)}s  !copy for size calculator")
+                _wave_embed.set_footer(text=f"Chartwise v10.0  Wave window: {int(WAVE_WINDOW)}s  !copy for size calculator")
                 await channel.send(embed=_wave_embed)
                 print(f"[WAVE] Multi-pair wave alert sent: {pair_label} + {_wave_pairs}")
             except Exception as _we:
@@ -5566,7 +5546,7 @@ async def scan_loop():
                                     inline=True
                                 )
                                 _recover_embed.add_field(name="Cooldown Saved", value=f"{remaining}m", inline=True)
-                                _recover_embed.set_footer(text="Chartwise v9.8  Circuit breaker auto-recovery on confirmed WIN")
+                                _recover_embed.set_footer(text="Chartwise v10.0  Circuit breaker auto-recovery on confirmed WIN")
                                 _cb_channel = bot.get_channel(CHANNEL_ID)
                                 if _cb_channel:
                                     await _cb_channel.send(embed=_recover_embed)
@@ -5651,7 +5631,7 @@ async def scan_loop():
                                     _wl_embed.add_field(name="Added to Watchlist", value=f"{_wl_age_m}m ago", inline=True)
                                 except Exception:
                                     pass
-                            _wl_embed.set_footer(text=f"Chartwise v9.8  Watchlist alert  not a confirmed signal  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+                            _wl_embed.set_footer(text=f"Chartwise v10.0  Watchlist alert  not a confirmed signal  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
                             await channel.send(embed=_wl_embed)
                             _to_remove_wl.append(_wi)
                             print(f"[WATCHLIST] {_wl_pair}: entry touched at {_wl_price:.4f}  alert sent")
@@ -5716,7 +5696,7 @@ async def scan_loop():
                                     pass
                             _al_embed.add_field(name="Alert Price", value=price_fmt(_alert["pair"], _alert["price"]), inline=True)
                             _al_embed.add_field(name="Direction", value=_al_dir_word.title(), inline=True)
-                            _al_embed.set_footer(text=f"Chartwise v9.8  Price alert triggered  Use !alert to set new alerts")
+                            _al_embed.set_footer(text=f"Chartwise v10.0  Price alert triggered  Use !alert to set new alerts")
                             try:
                                 await channel.send(embed=_al_embed)
                             except Exception as _al_send_err:
@@ -5829,7 +5809,7 @@ async def daily_summary():
     else:
         embed.add_field(name="Closed Trades", value="No trades closed today", inline=False)
 
-    embed.set_footer(text=f"Chartwise v9.8  Counters reset for new day")
+    embed.set_footer(text=f"Chartwise v10.0  Counters reset for new day")
     try:
         await channel.send(embed=embed)
     except Exception as e:
@@ -5895,10 +5875,11 @@ async def on_ready():
         if pair["label"] not in pair_locks:
             pair_locks[pair["label"]] = asyncio.Lock()
 
-    print(f"[READY] Chartwise v9.8 online as {bot.user}  ote po3 opens nwog-ndog ema-ribbon volatility optimize")
+    print(f"[READY] Chartwise v10.0 online as {bot.user}  outcome-tracker weight-rebalancer learning-sync")
     print(f"[READY] Monitoring {len(PAIRS)} pairs: {', '.join(p['label'] for p in PAIRS)}")
     asyncio.ensure_future(scan_loop())
     daily_summary.start()
+    outcome_tracker.start()
 
 
 @bot.command(name="status")
@@ -6000,7 +5981,7 @@ async def cmd_correlation(ctx):
             inline=False
         )
 
-        embed.set_footer(text="Chartwise v9.8  4H rolling correlation  Not financial advice")
+        embed.set_footer(text="Chartwise v10.0  4H rolling correlation  Not financial advice")
         await ctx.send(embed=embed)
         print(f"[CMD] !correlation  BTC/SOL r={corr_sol}, BTC/XRP r={corr_xrp}  sent to #{ctx.channel.name}")
     except Exception as _e:
@@ -6057,7 +6038,7 @@ async def cmd_alert(ctx, *args):
                 value=f"**{_alert['direction'].upper()}** {price_fmt(_alert['pair'], _alert['price'])}{_al_age}",
                 inline=False
             )
-        embed.set_footer(text="Chartwise v9.8  !alert clear to remove all  !alert [pair] [price] [above|below] to add")
+        embed.set_footer(text="Chartwise v10.0  !alert clear to remove all  !alert [pair] [price] [above|below] to add")
         await ctx.send(embed=embed)
         return
 
@@ -6234,7 +6215,7 @@ async def cmd_close(ctx, pair_arg: str = None, confirm_arg: str = None):
         embed.add_field(name="PnL R", value=f"{_pnl_sign}{_pnl_r:.2f}R", inline=True)
         _dur = format_trade_duration(trade.get("opened_at", ""))
         embed.add_field(name="Trade Duration", value=_dur, inline=True)
-        embed.set_footer(text="Chartwise v9.8  Manual close  Use !pnl for session summary")
+        embed.set_footer(text="Chartwise v10.0  Manual close  Use !pnl for session summary")
         await ctx.send(embed=embed)
         write_state_file()
         print(f"[CMD] !close {_cl_label} confirm  {_outcome} {_pnl_pct:+.2f}% by {ctx.author}")
@@ -6253,7 +6234,7 @@ async def cmd_close(ctx, pair_arg: str = None, confirm_arg: str = None):
             color=0xFFA500,
             timestamp=datetime.now(timezone.utc),
         )
-        embed.set_footer(text="Chartwise v9.8  Confirmation required to close trade")
+        embed.set_footer(text="Chartwise v10.0  Confirmation required to close trade")
         await ctx.send(embed=embed)
         print(f"[CMD] !close {_cl_label}  confirmation pending from {ctx.author}")
 
@@ -6332,7 +6313,7 @@ async def cmd_top(ctx, n_arg: str = "5"):
         ),
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  Top signals by score  !scoretable for scoring reference")
+    embed.set_footer(text=f"Chartwise v10.0  Top signals by score  !scoretable for scoring reference")
     await ctx.send(embed=embed)
     print(f"[CMD] !top {n}  sent {len(_top_n)} signals to #{ctx.channel.name}")
 
@@ -6468,7 +6449,7 @@ async def cmd_pnl(ctx):
             inline=False
         )
 
-    embed.set_footer(text=f"Chartwise v9.8  Stats reset on restart  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Stats reset on restart  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
 
 
@@ -6502,7 +6483,7 @@ async def cmd_circuit(ctx):
         )
         embed.add_field(name="Consecutive Losses", value=str(_consecutive_losses), inline=True)
         embed.add_field(name="Trips Needed", value=str(CIRCUIT_BREAKER_LOSSES), inline=True)
-    embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
 
 
@@ -6586,7 +6567,7 @@ async def cmd_pairs(ctx, action: str = None, pair_arg: str = None):
         if cool_str: status_parts.append(cool_str)
         if win_str: status_parts.append(win_str)
         embed.add_field(name=lbl, value="  ".join(status_parts), inline=False)
-    embed.set_footer(text=f"Chartwise v9.8  !pairs add/remove/reset to manage  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  !pairs add/remove/reset to manage  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
 
 
@@ -6679,7 +6660,7 @@ async def cmd_heatmap(ctx):
     if bias_lines:
         embed.add_field(name=" 4H HTF Bias (Live)", value="\n".join(bias_lines), inline=False)
 
-    embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
 
 
@@ -6753,7 +6734,7 @@ async def cmd_backtest(ctx, min_score_arg: int = None):
         ),
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  Backtest on logged data  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Backtest on logged data  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
 
 
@@ -6769,7 +6750,7 @@ async def cmd_setmin(ctx, score_arg: str = None):
             description=f"Current `MIN_SCORE` = **{MIN_SCORE}**\nUsage: `!setmin <515>` to change.",
             color=0x7C4DFF
         )
-        embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+        embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
         await ctx.send(embed=embed)
         return
     try:
@@ -6792,7 +6773,7 @@ async def cmd_setmin(ctx, score_arg: str = None):
     embed.add_field(name="New", value=str(MIN_SCORE), inline=True)
     embed.add_field(name="Effect", value="Signals scoring below this threshold will no longer fire.", inline=False)
     embed.add_field(name="Confidence Tiers", value=f"High: {CONFIDENCE_HIGH}    Medium: {CONFIDENCE_MEDIUM}", inline=False)
-    embed.set_footer(text=f"Chartwise v9.8  Changed by {ctx.author}  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Changed by {ctx.author}  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !setmin  MIN_SCORE changed from {old_score} to {MIN_SCORE} by {ctx.author}")
 
@@ -6847,7 +6828,30 @@ async def cmd_learn(ctx):
     overall_wr = total_w / total_t * 100 if total_t else 0
 
     embed.add_field(name="Overall", value=f"{total_w}W / {total_l}L — {overall_wr:.1f}% win rate\n{len(patterns)} patterns tracked", inline=False)
-    embed.set_footer(text="Learning data auto-saves to chartwise_learning.json")
+
+    # v10.0: Score multipliers section
+    if SCORE_MULTIPLIERS:
+        mult_lines = []
+        for pat, mult in sorted(SCORE_MULTIPLIERS.items()):
+            if mult > 1.05:
+                mult_lines.append(f" `{pat:<22}` ×{mult:.2f} (boosted)")
+            elif mult < 0.95:
+                mult_lines.append(f" `{pat:<22}` ×{mult:.2f} (penalized)")
+            else:
+                mult_lines.append(f"  `{pat:<22}` ×{mult:.2f}")
+        embed.add_field(name=" Score Multipliers (v10.0)", value="\n".join(mult_lines) or "All at ×1.00", inline=False)
+    else:
+        embed.add_field(name=" Score Multipliers (v10.0)", value="Not yet calculated (need 10+ outcomes per pattern)", inline=False)
+
+    # v10.0: Resolved outcomes counter
+    next_rebalance = 50 - (RESOLVED_OUTCOMES_COUNT % 50) if RESOLVED_OUTCOMES_COUNT % 50 != 0 else 50
+    embed.add_field(
+        name=" Outcome Tracker (v10.0)",
+        value=f"Resolved outcomes: **{RESOLVED_OUTCOMES_COUNT}**\nNext rebalance in: **{next_rebalance}** outcomes",
+        inline=False
+    )
+
+    embed.set_footer(text="Learning data auto-saves to chartwise_learning.json  |  Weights: chartwise_weights.json")
     await ctx.send(embed=embed)
 
 
@@ -6919,7 +6923,7 @@ async def cmd_winners(ctx):
             worst_lines.append(f"**{l} SL** / {w}W  ({wr:.0f}% WR)  `{key[:40]}`")
         embed.add_field(name=" Worst Patterns", value="\n".join(worst_lines), inline=False)
 
-    embed.set_footer(text=f"Chartwise v9.8  !learn for penalized patterns  !help for all commands")
+    embed.set_footer(text=f"Chartwise v10.0  !learn for penalized patterns  !help for all commands")
     await ctx.send(embed=embed)
     print(f"[CMD] !winners  sent winner confluence stats to #{ctx.channel.name}")
 
@@ -6965,7 +6969,7 @@ async def cmd_log(ctx, n_arg: str = "10"):
             inline=True
         )
 
-    embed.set_footer(text=f"Chartwise v9.8  Showing {len(entries)} of {len(SIGNAL_LOG)} logged  !log [n] for more")
+    embed.set_footer(text=f"Chartwise v10.0  Showing {len(entries)} of {len(SIGNAL_LOG)} logged  !log [n] for more")
     await ctx.send(embed=embed)
     print(f"[CMD] !log {n}  sent signal log to #{ctx.channel.name}")
 
@@ -7025,7 +7029,7 @@ async def cmd_winrate(ctx, n_arg: str = "20"):
     if pair_lines:
         embed.add_field(name="Per Pair", value="\n".join(pair_lines), inline=False)
 
-    embed.set_footer(text=f"Chartwise v9.8  Win rate across last {n_total} closed trades")
+    embed.set_footer(text=f"Chartwise v10.0  Win rate across last {n_total} closed trades")
     await ctx.send(embed=embed)
     print(f"[CMD] !winrate {n}  sent to #{ctx.channel.name}")
 
@@ -7118,7 +7122,7 @@ async def cmd_recap(ctx):
     embed.add_field(name="Worst Pair", value=f"**{worst_pair}**", inline=True)
     embed.add_field(name="Top Pattern (Wins)", value=top_pattern[:80], inline=False)
     embed.add_field(name="Most Active Session", value=f"**{top_session}**", inline=True)
-    embed.set_footer(text="Chartwise v9.8  Last 7 days recap")
+    embed.set_footer(text="Chartwise v10.0  Last 7 days recap")
     await ctx.send(embed=embed)
     print(f"[CMD] !recap  sent to #{ctx.channel.name}")
 
@@ -7168,7 +7172,7 @@ async def cmd_best(ctx, n_arg: str = "5"):
                 inline=False
             )
 
-    embed.set_footer(text=f"Chartwise v9.8  Top {len(top)} winning trades")
+    embed.set_footer(text=f"Chartwise v10.0  Top {len(top)} winning trades")
     await ctx.send(embed=embed)
     print(f"[CMD] !best {n}  sent to #{ctx.channel.name}")
 
@@ -7218,7 +7222,7 @@ async def cmd_worst(ctx, n_arg: str = "5"):
                 inline=False
             )
 
-    embed.set_footer(text=f"Chartwise v9.8  Bottom {len(bottom)} losing trades")
+    embed.set_footer(text=f"Chartwise v10.0  Bottom {len(bottom)} losing trades")
     await ctx.send(embed=embed)
     print(f"[CMD] !worst {n}  sent to #{ctx.channel.name}")
 
@@ -7278,7 +7282,7 @@ async def cmd_heat(ctx, n_arg: str = "7"):
             total = sum(sess_counts.values())
             line = f"Asia **{sess_counts.get('Asia',0)}** | London **{sess_counts.get('London',0)}** | NY **{sess_counts.get('NY',0)}** | Off **{sess_counts.get('Off-Hours',0)}**  Total: **{total}**"
             embed.add_field(name=pair_lbl, value=line, inline=False)
-    embed.set_footer(text=f"Chartwise v9.8  SIGNAL_LOG (last {SIGNAL_LOG.maxlen})  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  SIGNAL_LOG (last {SIGNAL_LOG.maxlen})  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !heat {n_days}  sent to #{ctx.channel.name}")
 
@@ -7312,7 +7316,7 @@ async def cmd_notes(ctx, action: str = "list", *, text: str = ""):
         )
         for i, note in enumerate(NOTES, 1):
             embed.add_field(name=f"#{i}", value=note, inline=False)
-        embed.set_footer(text=f"Chartwise v9.8  {len(NOTES)}/10 notes  !notes add/clear")
+        embed.set_footer(text=f"Chartwise v10.0  {len(NOTES)}/10 notes  !notes add/clear")
         await ctx.send(embed=embed)
     print(f"[CMD] !notes {action}  used in #{ctx.channel.name}")
 
@@ -7505,7 +7509,7 @@ async def cmd_brief(ctx):
         except Exception as e:
             embed.add_field(name=f" {pair['label']}", value=f" Error: {str(e)[:60]}", inline=False)
 
-    embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}  !snapshot [pair] for full view")
+    embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}  !snapshot [pair] for full view")
     await ctx.send(embed=embed)
     print(f"[CMD] !brief  sent morning brief to #{ctx.channel.name}")
 
@@ -7589,7 +7593,7 @@ async def cmd_since(ctx, pair_arg: str = None):
             inline=True
         )
 
-    embed.set_footer(text=f"Chartwise v9.8  {now_dt.strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  {now_dt.strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !since {pair_arg or 'all'}  sent to #{ctx.channel.name}")
 
@@ -7713,7 +7717,7 @@ async def cmd_avg(ctx, pair_arg: str = None):
         ),
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  Educational tool  not financial advice  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Educational tool  not financial advice  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !avg {pair_label}  DCA calc sent to #{ctx.channel.name}")
 
@@ -7785,7 +7789,7 @@ async def cmd_rsi(ctx, pair_arg: str = None):
         value=">70 =  Overbought  50-70 =  Bullish  30-50 =  Neutral  <30 =  Oversold",
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  RSI(14)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  RSI(14)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !rsi {pair_arg or 'all'}  sent RSI dashboard to #{ctx.channel.name}")
 
@@ -7947,7 +7951,7 @@ async def cmd_scalp(ctx, pair_arg: str = None):
         value="Scalp analysis uses 5m data only  no HTF filter. Use tight stops. Do not hold scalp positions through news events.",
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  5m Scalp  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  5m Scalp  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !scalp {pair_label}  sent scalp assessment to #{ctx.channel.name}")
 
@@ -8024,7 +8028,7 @@ async def cmd_pivot(ctx, pair_arg: str = None):
         value=f"**{nearest[0]}** at {price_fmt(pair['label'], nearest[1])} ({abs(current_price - nearest[1]) / current_price * 100:.2f}% away)",
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  Classic pivot: (H+L+C)/3  Previous 4H candle  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Classic pivot: (H+L+C)/3  Previous 4H candle  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !pivot {pair['label']}  sent to #{ctx.channel.name}")
 
@@ -8051,7 +8055,7 @@ async def cmd_account(ctx, amount_arg: str = None):
             color=0x00BCD4,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_footer(text="Chartwise v9.8  !account [amount] to update")
+        embed.set_footer(text="Chartwise v10.0  !account [amount] to update")
         await ctx.send(embed=embed)
         return
 
@@ -8072,7 +8076,7 @@ async def cmd_account(ctx, amount_arg: str = None):
             color=0x00E676,
             timestamp=datetime.now(timezone.utc)
         )
-        embed.set_footer(text=f"Chartwise v9.8  Set by {ctx.author}")
+        embed.set_footer(text=f"Chartwise v10.0  Set by {ctx.author}")
         await ctx.send(embed=embed)
         print(f"[CMD] !account {new_size:,.0f}  set by {ctx.author}")
     except ValueError:
@@ -8161,7 +8165,7 @@ async def cmd_rrhelper(ctx, entry_arg: str = None, sl_arg: str = None, t1_arg: s
     embed.add_field(name="Suggested Position", value=f"${pos_usd:,.0f} notional  ({pos_units:.4f} units)", inline=False)
     embed.add_field(name="Break-Even Price", value=f"{breakeven_price:,.4f} (move SL to entry after T1)", inline=False)
     embed.add_field(name="Quality Rating", value=f"{quality}\n*{quality_note}*", inline=False)
-    embed.set_footer(text=f"Chartwise v9.8  !account [amount] to change account size  Not financial advice")
+    embed.set_footer(text=f"Chartwise v10.0  !account [amount] to change account size  Not financial advice")
     await ctx.send(embed=embed)
     print(f"[CMD] !rrhelper entry={entry} sl={sl} t1={t1} t2={t2}  sent to #{ctx.channel.name}")
 
@@ -8325,7 +8329,7 @@ async def cmd_stats(ctx):
         value=f"Wins: {len(wins)}  Losses: {len(losses)}  T1 Hits: {session_pnl.get('t1_hits', 0)}",
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  Session stats reset on restart  {now_utc.strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Session stats reset on restart  {now_utc.strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !stats  sent dashboard to #{ctx.channel.name}")
 
@@ -8372,7 +8376,7 @@ async def cmd_sensitivity(ctx, level_arg: str = None):
             value="`!sensitivity 1` through `!sensitivity 5`",
             inline=False
         )
-        embed.set_footer(text=f"Chartwise v9.8  MIN_SCORE={MIN_SCORE}  CONF_HIGH={CONFIDENCE_HIGH}  CONF_MED={CONFIDENCE_MEDIUM}")
+        embed.set_footer(text=f"Chartwise v10.0  MIN_SCORE={MIN_SCORE}  CONF_HIGH={CONFIDENCE_HIGH}  CONF_MED={CONFIDENCE_MEDIUM}")
         await ctx.send(embed=embed)
         return
 
@@ -8411,7 +8415,7 @@ async def cmd_sensitivity(ctx, level_arg: str = None):
         ),
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  Set by {ctx.author}  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Set by {ctx.author}  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !sensitivity {level}  MIN_SCORE={MIN_SCORE}, CONF_HIGH={CONFIDENCE_HIGH}, CONF_MED={CONFIDENCE_MEDIUM}  by {ctx.author}")
 
@@ -8420,7 +8424,7 @@ async def cmd_sensitivity(ctx, level_arg: str = None):
 async def cmd_help(ctx):
     """Show all Chartwise commands grouped by category. (v9.8)"""
     embed = discord.Embed(
-        title=" Chartwise v9.8  Command Reference",
+        title=" Chartwise v10.0  Command Reference",
         description=(
             "High-probability SMC/ICT + EMA crypto signal bot for BTC/USD, SOL/USD, XRP/USD\n"
             "Commands grouped by category. Use `!scoretable` for the full scoring reference."
@@ -8565,7 +8569,7 @@ async def cmd_help(ctx):
         value="BTC/USD  SOL/USD  XRP/USD  24/7 crypto scanning via Coinbase API",
         inline=False
     )
-    embed.set_footer(text="Chartwise v9.8  !scoretable for scoring reference  Not financial advice")
+    embed.set_footer(text="Chartwise v10.0  !scoretable for scoring reference  Not financial advice")
     await ctx.send(embed=embed)
 
 
@@ -8683,7 +8687,7 @@ async def cmd_risk(ctx, account_arg: str = None, risk_arg: str = None):
             value="`!risk 5000`  $5k account\n`!risk 5000 2`  $5k + 2%\n`!risk reset`  defaults",
             inline=False
         )
-        embed.set_footer(text="Chartwise v9.8  Settings are per-session (reset on bot restart)")
+        embed.set_footer(text="Chartwise v10.0  Settings are per-session (reset on bot restart)")
         await ctx.send(embed=embed)
         return
 
@@ -8947,7 +8951,7 @@ async def cmd_levels(ctx, pair_arg: str = None):
             except Exception:
                 pass
 
-            embed.set_footer(text=f"Chartwise v9.8  1H data + 5m intraday  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+            embed.set_footer(text=f"Chartwise v10.0  1H data + 5m intraday  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
             await ctx.send(embed=embed)
 
         except Exception as e:
@@ -9093,7 +9097,7 @@ async def cmd_volatility(ctx, pair_arg: str = None):
         embed.add_field(name=" Choppiness Index", value="\n".join(ci_lines) or "N/A", inline=False)
         embed.add_field(name=" Historical Volatility", value=hist_vol_str, inline=True)
         embed.add_field(name=" Volatility Regime", value=regime_str, inline=True)
-        embed.set_footer(text=f"Chartwise v9.8  Volatility Report  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+        embed.set_footer(text=f"Chartwise v10.0  Volatility Report  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
         await ctx.send(embed=embed)
         print(f"[CMD] !volatility {pair_label}")
     except Exception as e:
@@ -9178,7 +9182,7 @@ async def cmd_ema(ctx, pair_arg: str = None):
             except Exception as _e:
                 embed.add_field(name=f"**{tf_label}**", value=f"Error: {_e}", inline=True)
 
-        embed.set_footer(text=f"Chartwise v9.8  EMA Ribbon  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+        embed.set_footer(text=f"Chartwise v10.0  EMA Ribbon  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
         await ctx.send(embed=embed)
         print(f"[CMD] !ema {pair_label}")
     except Exception as e:
@@ -9296,7 +9300,7 @@ async def cmd_optimize(ctx):
         ),
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  Optimizer  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Optimizer  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !optimize  best threshold: MIN_SCORE={best_threshold} EV={best_ev:.2f}R")
 
@@ -9349,7 +9353,7 @@ async def cmd_divergence(ctx):
             inline=True
         )
 
-    embed.set_footer(text="Chartwise v9.8  !scan to trigger manual scan  !help for all commands")
+    embed.set_footer(text="Chartwise v10.0  !scan to trigger manual scan  !help for all commands")
     await ctx.send(embed=embed)
     print(f"[CMD] !divergence  sent divergence dashboard to #{ctx.channel.name}")
 
@@ -9468,7 +9472,7 @@ async def cmd_tf(ctx, pair_arg: str = None):
         except Exception as e:
             embed.add_field(name=tf_label, value=f"Error: {e}", inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  Use !divergence for RSI divergence map  !help for commands")
+    embed.set_footer(text=f"Chartwise v10.0  Use !divergence for RSI divergence map  !help for commands")
     await ctx.send(embed=embed)
     print(f"[CMD] !tf {label}  sent multi-TF snapshot to #{ctx.channel.name}")
 
@@ -9535,7 +9539,7 @@ async def cmd_bias(ctx, pair_arg: str = None):
         value=" = bullish 4H candle   = bearish 4H candle\n7+/10 bull  Strong Bull bias  |  7+/10 bear  Strong Bear bias",
         inline=False
     )
-    embed.set_footer(text="Chartwise v9.8  !squeeze for BB squeeze  !tf for multi-TF snapshot")
+    embed.set_footer(text="Chartwise v10.0  !squeeze for BB squeeze  !tf for multi-TF snapshot")
     await ctx.send(embed=embed)
     print(f"[CMD] !bias  sent 4H candle bias dashboard to #{ctx.channel.name}")
 
@@ -9607,7 +9611,7 @@ async def cmd_squeeze(ctx, pair_arg: str = None):
         value=" **SQUEEZE** = bands compressed < 1.5% of price  breakout imminent\n Contracting = narrowing (pre-squeeze)\n Expanding = breakout underway\n Normal = no notable condition",
         inline=False
     )
-    embed.set_footer(text="Chartwise v9.8  !snapshot for full pair analysis  !help for all commands")
+    embed.set_footer(text="Chartwise v10.0  !snapshot for full pair analysis  !help for all commands")
     await ctx.send(embed=embed)
     print(f"[CMD] !squeeze  sent BB squeeze monitor to #{ctx.channel.name}")
 
@@ -9766,7 +9770,7 @@ async def cmd_snapshot(ctx, pair_arg: str = None):
         _snap_regime_icon = "" if _snap_regime == "Trending Up" else ("" if _snap_regime == "Trending Down" else "")
         embed.add_field(name=" Market Regime", value=f"{_snap_regime_icon} {_snap_regime}", inline=True)
 
-    embed.set_footer(text="Chartwise v9.8  !tf for multi-TF view  !divergence for RSI map  !squeeze for BB squeeze")
+    embed.set_footer(text="Chartwise v10.0  !tf for multi-TF view  !divergence for RSI map  !squeeze for BB squeeze")
     await ctx.send(embed=embed)
     print(f"[CMD] !snapshot {label}  sent full snapshot to #{ctx.channel.name}")
 
@@ -9807,7 +9811,7 @@ async def cmd_config(ctx):
     Usage: !config
     """
     embed = discord.Embed(
-        title=" Chartwise v9.8  Bot Configuration",
+        title=" Chartwise v10.0  Bot Configuration",
         description="Full runtime configuration at a glance.",
         color=0x7C4DFF,
         timestamp=datetime.now(timezone.utc)
@@ -9897,7 +9901,7 @@ async def cmd_config(ctx):
         inline=True
     )
 
-    embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}  Use !help for commands")
+    embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}  Use !help for commands")
     await ctx.send(embed=embed)
     print(f"[CMD] !config  sent bot configuration to #{ctx.channel.name}")
 
@@ -10039,7 +10043,7 @@ async def cmd_compare(ctx, pair1_arg: str = None, pair2_arg: str = None):
     embed.add_field(name=f" {p1['label']}", value=fmt_col(stats1), inline=True)
     embed.add_field(name=f" {p2['label']}", value=fmt_col(stats2), inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}  !snapshot [pair] for full view")
+    embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}  !snapshot [pair] for full view")
     await ctx.send(embed=embed)
     print(f"[CMD] !compare {p1['label']} {p2['label']}  sent comparison to #{ctx.channel.name}")
 
@@ -10134,7 +10138,7 @@ async def cmd_report(ctx, pair_arg: str = None):
         ]
         embed.add_field(name=f" {pair_label}", value="\n".join(lines), inline=False)
 
-    embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !report {pair_arg or 'all'}  sent to #{ctx.channel.name}")
 
@@ -10207,7 +10211,7 @@ async def cmd_streak(ctx):
     result_bar = " ".join("" if t["outcome"] == "WIN" else "" for t in recent)
     embed.add_field(name="Last 5 Results", value=result_bar or "", inline=False)
 
-    embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !streak  sent streak data to #{ctx.channel.name}")
 
@@ -10245,7 +10249,7 @@ async def cmd_export(ctx):
 
     csv_text = "\n".join(rows)
     # Discord has 2000 char limit per message; split if needed
-    header_msg = f" **Chartwise v9.8  Trade Export** ({len(trades_list)} trades)\n"
+    header_msg = f" **Chartwise v10.0  Trade Export** ({len(trades_list)} trades)\n"
 
     # Split into chunks of ~1800 chars to fit in code blocks
     chunk_size = 1700
@@ -10316,7 +10320,7 @@ async def cmd_filtered(ctx, n_arg: str = "5"):
             inline=True
         )
 
-    embed.set_footer(text=f"Chartwise v9.8  {FILTERED_LOG.maxlen} max entries  !setmin to lower threshold")
+    embed.set_footer(text=f"Chartwise v10.0  {FILTERED_LOG.maxlen} max entries  !setmin to lower threshold")
     await ctx.send(embed=embed)
     print(f"[CMD] !filtered {n}  sent filtered log to #{ctx.channel.name}")
 
@@ -10413,7 +10417,7 @@ async def cmd_momentum(ctx, pair_arg: str = None):
             inline=False
         )
 
-    embed.set_footer(text="Chartwise v9.8  EMA20 slope   RSI zone  MACD above/below signal")
+    embed.set_footer(text="Chartwise v10.0  EMA20 slope   RSI zone  MACD above/below signal")
     await ctx.send(embed=embed)
     print(f"[CMD] !momentum {pair_arg or 'all'}  sent to #{ctx.channel.name}")
 
@@ -10473,7 +10477,7 @@ async def cmd_topgainer(ctx):
             inline=False
         )
 
-    embed.set_footer(text="Chartwise v9.8  24h change via Coinbase 4H OHLCV")
+    embed.set_footer(text="Chartwise v10.0  24h change via Coinbase 4H OHLCV")
     await ctx.send(embed=embed)
     print(f"[CMD] !topgainer  sent to #{ctx.channel.name}")
 
@@ -10566,7 +10570,7 @@ async def cmd_drawdown(ctx):
         inline=False
     )
 
-    embed.set_footer(text="Chartwise v9.8  Drawdown from cumulative PnL equity curve")
+    embed.set_footer(text="Chartwise v10.0  Drawdown from cumulative PnL equity curve")
     await ctx.send(embed=embed)
     print(f"[CMD] !drawdown  sent to #{ctx.channel.name}")
 
@@ -10674,7 +10678,7 @@ async def cmd_replay(ctx, n_arg: str = "5"):
         )
         embed.add_field(name=f" {pair_l}", value=field_val, inline=False)
 
-    embed.set_footer(text=f"Chartwise v9.8  !replay [n] to see more (max 15)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  !replay [n] to see more (max 15)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !replay {n}  sent to #{ctx.channel.name}")
 
@@ -10769,7 +10773,7 @@ async def cmd_bb(ctx, pair_arg: str = None):
         except Exception as e:
             embed.add_field(name=f" {tf_label}", value=f" Error: {str(e)[:50]}", inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  BB(20,2)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  BB(20,2)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !bb {label}  sent to #{ctx.channel.name}")
 
@@ -10844,7 +10848,7 @@ async def cmd_dr(ctx, pair_arg: str = None):
         except Exception as e:
             embed.add_field(name=f" {tf_label}", value=f" Error: {str(e)[:50]}", inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  ICT Dealing Range  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  ICT Dealing Range  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !dr {label}  sent to #{ctx.channel.name}")
 
@@ -10916,7 +10920,7 @@ async def cmd_bb2(ctx, pair_arg: str = None):
         except Exception as e:
             embed.add_field(name=f" {tf_label}", value=f" Error: {str(e)[:50]}", inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  ICT Breaker Blocks  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  ICT Breaker Blocks  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !bb2 {label}  sent to #{ctx.channel.name}")
 
@@ -10987,7 +10991,7 @@ async def cmd_ce(ctx, pair_arg: str = None):
         except Exception as e:
             embed.add_field(name=f" {tf_label}", value=f" Error: {str(e)[:50]}", inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  ICT CE = 50% of FVG  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  ICT CE = 50% of FVG  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !ce {label}  sent to #{ctx.channel.name}")
 
@@ -11077,7 +11081,7 @@ async def cmd_ha(ctx, pair_arg: str = None):
         except Exception as e:
             embed.add_field(name=f" {tf_label}", value=f" Error: {str(e)[:50]}", inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  Heikin Ashi(OHLC/4)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Heikin Ashi(OHLC/4)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !ha {label}  sent to #{ctx.channel.name}")
 
@@ -11165,7 +11169,7 @@ async def cmd_kc(ctx, pair_arg: str = None):
         except Exception as e:
             embed.add_field(name=f" {tf_label}", value=f" Error: {str(e)[:50]}", inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  KC(EMA20,ATR14,1.5)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  KC(EMA20,ATR14,1.5)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !kc {label}  sent to #{ctx.channel.name}")
 
@@ -11252,7 +11256,7 @@ async def cmd_fvg(ctx, pair_arg: str = None):
         except Exception as e:
             embed.add_field(name=f" {tf_label}", value=f" Error: {str(e)[:50]}", inline=True)
 
-    embed.set_footer(text=f"Chartwise v9.8  ICT FVG (3-candle imbalance)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  ICT FVG (3-candle imbalance)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !fvg {label}  sent to #{ctx.channel.name}")
 
@@ -11381,7 +11385,7 @@ async def cmd_news(ctx, pair_arg: str = None):
             inline=False
         )
 
-    embed.set_footer(text=f"Chartwise v9.8  Narrative from OHLCV only  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Narrative from OHLCV only  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !news {label}  sent narrative to #{ctx.channel.name}")
 
@@ -11450,7 +11454,7 @@ async def cmd_watchlist(ctx):
         await ctx.send(" Watchlist is empty  no near-miss signals currently tracked.")
         return
 
-    embed.set_footer(text=f"Chartwise v9.8  {total} watchlist item(s)  Alert fires when price touches entry zone  {now_dt.strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  {total} watchlist item(s)  Alert fires when price touches entry zone  {now_dt.strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !watchlist  sent {total} item(s) to #{ctx.channel.name}")
 
@@ -11602,7 +11606,7 @@ async def cmd_targets(ctx, pair_arg: str = None):
         inline=False
     )
 
-    embed.set_footer(text=f"Chartwise v9.8  Key targets from S/R  Fib  Pivot  OB  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Key targets from S/R  Fib  Pivot  OB  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !targets {label}  sent key targets to #{ctx.channel.name}")
 
@@ -11744,7 +11748,7 @@ async def cmd_pa(ctx, pair_arg: str = None):
         value=structure_str,
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  Pure price action (5m)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Pure price action (5m)  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !pa {label}  sent PA summary to #{ctx.channel.name}")
 
@@ -11890,7 +11894,7 @@ async def cmd_debug(ctx, pair_arg: str = None):
             inline=False
         )
 
-    embed.set_footer(text=f"Chartwise v9.8  !debug  power user scoring breakdown  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  !debug  power user scoring breakdown  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !debug {label}  sent scoring breakdown to #{ctx.channel.name}")
 
@@ -11974,7 +11978,7 @@ async def cmd_patterns(ctx):
     embed.add_field(name=" Multi-Timeframe", value=mtf_lines or "No data", inline=False)
 
     total_closed = len(closed)
-    embed.set_footer(text=f"Chartwise v9.8  Based on {total_closed} closed trades  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Based on {total_closed} closed trades  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !patterns  sent pattern overview to #{ctx.channel.name}")
 
@@ -12066,7 +12070,7 @@ async def cmd_hours(ctx):
         ),
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  All times UTC  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  All times UTC  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !hours  sent hourly breakdown to #{ctx.channel.name}")
 
@@ -12093,7 +12097,7 @@ async def cmd_edge(ctx):
 
     if total == 0:
         embed.add_field(name="No Data", value="No closed trades to analyze yet. Run the bot and let trades close!", inline=False)
-        embed.set_footer(text=f"Chartwise v9.8  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+        embed.set_footer(text=f"Chartwise v10.0  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
         await ctx.send(embed=embed)
         return
 
@@ -12196,7 +12200,7 @@ async def cmd_edge(ctx):
             inline=False
         )
 
-    embed.set_footer(text=f"Chartwise v9.8  !stats for full dashboard  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  !stats for full dashboard  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !edge  sent edge analysis to #{ctx.channel.name}")
 
@@ -12334,7 +12338,7 @@ async def cmd_calendar(ctx, mode_arg: str = "week"):
         value=f"Signals: **{total_sigs}**  Wins: **{total_wins}**  Losses: **{total_losses}**",
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  !calendar week or month  {now_utc.strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  !calendar week or month  {now_utc.strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !calendar {mode}  sent to #{ctx.channel.name}")
 
@@ -12436,7 +12440,7 @@ async def cmd_scoretable(ctx):
         ),
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  !debug [pair] for live score breakdown  !learn for adaptive penalties")
+    embed.set_footer(text=f"Chartwise v10.0  !debug [pair] for live score breakdown  !learn for adaptive penalties")
     await ctx.send(embed=embed)
     print(f"[CMD] !scoretable  sent to #{ctx.channel.name}")
 
@@ -12554,7 +12558,7 @@ async def cmd_copy(ctx, pair_arg: str = None, ratio_arg: str = None):
         ),
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  !copy [pair] [ratio]  Not financial advice")
+    embed.set_footer(text=f"Chartwise v10.0  !copy [pair] [ratio]  Not financial advice")
     await ctx.send(embed=embed)
     print(f"[CMD] !copy {pair_label} {ratio}  sent to #{ctx.channel.name}")
 
@@ -12741,7 +12745,7 @@ async def cmd_backtest2(ctx, pair_arg: str = None, days_arg: str = None):
         ),
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  Enhanced backtest  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Enhanced backtest  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !backtest2 {pair_label} {days}d  {total} signals, WR={wr:.1f}% Sharpe={sharpe:.2f}")
 
@@ -12865,7 +12869,7 @@ async def cmd_montecarlo(ctx, n_sims_arg: str = None):
         ),
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  Monte Carlo  {n_sims:,} paths  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Monte Carlo  {n_sims:,} paths  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !montecarlo {n_sims}  WR={win_rate*100:.1f}% median={pct_change(median_bal)} ruin={prob_ruin:.1f}%")
 
@@ -12947,7 +12951,7 @@ async def cmd_ote(ctx, pair_arg: str = None):
                     if in_ote:
                         embed.color = 0x00E676  # green when in OTE
 
-            embed.set_footer(text=f"Chartwise v9.8  ICT OTE  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+            embed.set_footer(text=f"Chartwise v10.0  ICT OTE  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
             await ctx.send(embed=embed)
         except Exception as e:
             await ctx.send(f" {label}: Error computing OTE  {e}")
@@ -13027,7 +13031,7 @@ async def cmd_po3(ctx, pair_arg: str = None):
                     inline=False
                 )
 
-            embed.set_footer(text=f"Chartwise v9.8  ICT PO3  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+            embed.set_footer(text=f"Chartwise v10.0  ICT PO3  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
             await ctx.send(embed=embed)
         except Exception as e:
             await ctx.send(f" {label}: Error computing PO3  {e}")
@@ -13110,7 +13114,7 @@ async def cmd_opens(ctx):
     if not has_data:
         embed.description += "\n\n No opening price data yet. Data is recorded automatically at 00:00 UTC."
 
-    embed.set_footer(text=f"Chartwise v9.8  Opens recorded at 00:00 UTC daily  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Opens recorded at 00:00 UTC daily  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
 
 
@@ -13232,14 +13236,206 @@ async def cmd_add_trade(ctx, pair_arg: str = None, entry_arg: str = None,
         ),
         inline=False
     )
-    embed.set_footer(text=f"Chartwise v9.8  Manual add by {ctx.author}  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+    embed.set_footer(text=f"Chartwise v10.0  Manual add by {ctx.author}  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
     await ctx.send(embed=embed)
     print(f"[CMD] !add {pair_label} {direction} entry={entry} sl={sl} t1={t1} t2={t2} by {ctx.author}")
 
 
-# 
+#
+# v10.0: OUTCOME TRACKER, WEIGHT REBALANCER, LEARNING SYNC
+#
+
+import subprocess
+import sys as _sys
+
+def rebalance_weights():
+    """v10.0: Read pattern_performance and update SCORE_MULTIPLIERS based on win rates."""
+    global SCORE_MULTIPLIERS
+    for pattern, data in pattern_performance.items():
+        wins = data.get("wins", 0)
+        losses = data.get("losses", 0)
+        total = wins + losses
+        if total < 10:
+            continue
+        wr = wins / total
+        current = SCORE_MULTIPLIERS.get(pattern, 1.0)
+        if wr > 0.65:
+            new_val = min(current + 0.2, 3.0)  # max +2.0 above base 1.0
+        elif wr < 0.35:
+            new_val = max(current - 0.2, 0.0)  # max -1.0 below base 1.0 (floor 0.0)
+        else:
+            new_val = current
+        SCORE_MULTIPLIERS[pattern] = round(new_val, 2)
+
+    try:
+        WEIGHTS_FILE.write_text(json.dumps(SCORE_MULTIPLIERS, indent=2))
+        print(f"[REBALANCE] Weights saved to {WEIGHTS_FILE}: {SCORE_MULTIPLIERS}")
+    except Exception as e:
+        print(f"[WARN] Could not save weights file: {e}")
+
+    # Trigger learning sync to GitHub
+    sync_learning_to_github()
+
+
+def sync_learning_to_github():
+    """v10.0: Commit and push chartwise_learning.json and chartwise_weights.json to GitHub."""
+    git_exe = r"C:\Program Files\Git\cmd\git.exe" if _sys.platform == "win32" else "git"
+    bot_dir = str(Path(__file__).parent)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    try:
+        r1 = subprocess.run(
+            [git_exe, "add", "chartwise_learning.json", "chartwise_weights.json"],
+            cwd=bot_dir, capture_output=True, text=True, timeout=30
+        )
+        if r1.returncode != 0:
+            print(f"[SYNC] git add failed: {r1.stderr.strip()}")
+            return False, r1.stderr.strip()
+
+        r2 = subprocess.run(
+            [git_exe, "commit", "-m", f"auto: learning sync [{ts}]"],
+            cwd=bot_dir, capture_output=True, text=True, timeout=30
+        )
+        if r2.returncode != 0 and "nothing to commit" not in r2.stdout + r2.stderr:
+            print(f"[SYNC] git commit failed: {r2.stderr.strip()}")
+            return False, r2.stderr.strip()
+
+        r3 = subprocess.run(
+            [git_exe, "push", "origin", "main"],
+            cwd=bot_dir, capture_output=True, text=True, timeout=60
+        )
+        if r3.returncode != 0:
+            print(f"[SYNC] git push failed: {r3.stderr.strip()}")
+            return False, r3.stderr.strip()
+
+        print(f"[SYNC] Learning data pushed to GitHub at {ts}")
+        return True, "OK"
+    except Exception as e:
+        print(f"[SYNC] Exception during git sync: {e}")
+        return False, str(e)
+
+
+@tasks.loop(minutes=5)
+async def outcome_tracker():
+    """v10.0: Every 5 min, check open signals against current price and record outcomes."""
+    global RESOLVED_OUTCOMES_COUNT
+    channel = bot.get_channel(CHANNEL_ID)
+    if channel is None:
+        return
+
+    signals = _read_signals()
+    changed = False
+
+    for sig in signals:
+        if sig.get("outcome", "PENDING") != "PENDING":
+            continue
+
+        pair_label = sig.get("pair", "")
+        pair_conf = next((p for p in DYNAMIC_PAIRS if p["label"] == pair_label), None)
+        if pair_conf is None:
+            continue
+
+        try:
+            candles = await fetch_candles(pair_conf, timeframe="5m")
+            if not candles:
+                continue
+            current_price = candles[-1]["close"]
+        except Exception:
+            continue
+
+        direction = sig.get("direction", "LONG").upper()
+        entry  = sig.get("entry",  0.0)
+        sl     = sig.get("sl",     0.0)
+        t1     = sig.get("t1",     0.0)
+        t2     = sig.get("t2",     0.0)
+        t1_hit = sig.get("t1_hit", False)
+
+        outcome = None
+        exit_type = None
+
+        if direction == "LONG":
+            if current_price <= sl and entry > 0:
+                outcome, exit_type = "LOSS", "stop"
+            elif current_price >= t2 and t2 > 0:
+                outcome, exit_type = "WIN", "t2"
+            elif current_price >= t1 and t1 > 0 and not t1_hit:
+                outcome, exit_type = "PARTIAL_WIN", "t1"
+                sig["t1_hit"] = True
+        else:  # SHORT
+            if current_price >= sl and entry > 0:
+                outcome, exit_type = "LOSS", "stop"
+            elif current_price <= t2 and t2 > 0:
+                outcome, exit_type = "WIN", "t2"
+            elif current_price <= t1 and t1 > 0 and not t1_hit:
+                outcome, exit_type = "PARTIAL_WIN", "t1"
+                sig["t1_hit"] = True
+
+        if outcome is None:
+            continue
+
+        # Only mark final outcomes (WIN/LOSS) as resolved; PARTIAL_WIN stays open
+        if outcome in ("WIN", "LOSS"):
+            sig["outcome"] = outcome
+            sig["exit_type"] = exit_type
+            sig["exit_price"] = current_price
+            sl_dist = abs(entry - sl)
+            sig["pnl_r"] = round(abs(current_price - entry) / max(sl_dist, 1e-9) * (1 if outcome == "WIN" else -1), 2)
+        changed = True
+
+        # Update pattern_performance
+        for reason in sig.get("reasons", []):
+            rl = reason.lower()
+            for kw, pk in [("engulfing", "engulfing"), ("hammer", "hammer"), ("pin bar", "pin_bar"),
+                           ("pin_bar", "pin_bar"), ("three-line strike", "three_line_strike"),
+                           ("inside bar", "inside_bar")]:
+                if kw in rl:
+                    if outcome in ("WIN", "PARTIAL_WIN"):
+                        pattern_performance[pk]["wins"] += 1
+                    else:
+                        pattern_performance[pk]["losses"] += 1
+                    break
+
+        # Increment resolved outcomes counter
+        if outcome in ("WIN", "LOSS"):
+            RESOLVED_OUTCOMES_COUNT += 1
+            if RESOLVED_OUTCOMES_COUNT % 50 == 0:
+                rebalance_weights()
+
+        # Post result embed
+        try:
+            color = 0x00E676 if outcome == "WIN" else (0xFFA500 if outcome == "PARTIAL_WIN" else 0xFF4444)
+            emoji = "" if outcome == "WIN" else ("" if outcome == "PARTIAL_WIN" else "")
+            embed = discord.Embed(
+                title=f"{emoji} Outcome Resolved: {pair_label} {direction}",
+                description=f"**{outcome}** — auto-detected by outcome tracker",
+                color=color,
+            )
+            embed.add_field(name="Entry",  value=price_fmt(pair_label, entry),         inline=True)
+            embed.add_field(name="Exit",   value=price_fmt(pair_label, current_price), inline=True)
+            embed.add_field(name="P&L (R)", value=f"{sig.get('pnl_r', 0):+.2f}R",    inline=True)
+            embed.set_footer(text=f"Chartwise v10.0  Outcome Tracker  {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+            await channel.send(embed=embed)
+        except Exception as e:
+            print(f"[OUTCOME] Failed to post embed: {e}")
+
+    if changed:
+        _write_signals(signals)
+        _save_learning()
+
+
+@bot.command(name="learnsync")
+async def cmd_learnsync(ctx):
+    """v10.0: Manually trigger learning sync to GitHub."""
+    await ctx.send(" Syncing learning data to GitHub...")
+    ok, msg = sync_learning_to_github()
+    if ok:
+        await ctx.send(" Learning data pushed to GitHub successfully.")
+    else:
+        await ctx.send(f" Sync failed: `{msg}`")
+
+
+#
 # ENTRY POINT
-# 
+#
 
 def main():
     global pair_locks
